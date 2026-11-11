@@ -16,8 +16,8 @@ android {
     applicationId = "com.aistudio.chapterreader.qrfslx"
     minSdk = 24
     targetSdk = 36
-    versionCode = System.getenv("APP_VERSION_CODE")?.toIntOrNull() ?: 3
-    versionName = "1.2"
+    versionCode = System.getenv("APP_VERSION_CODE")?.toIntOrNull() ?: 4
+    versionName = "1.3"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

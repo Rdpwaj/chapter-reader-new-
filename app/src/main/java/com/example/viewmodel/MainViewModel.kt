@@ -48,7 +48,8 @@ enum class SubScreen {
 data class UndoTrashBanner(
     val message: String,
     val deletedChapterIds: List<Long> = emptyList(),
-    val deletedNovel: NovelEntity? = null
+    val deletedNovel: NovelEntity? = null,
+    val deletedNovels: List<NovelEntity> = emptyList()
 )
 
 @OptIn(ExperimentalCoroutinesApi::class, FlowPreview::class)
@@ -142,8 +143,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _statusMessage = MutableStateFlow<String?>(null)
     val statusMessage: StateFlow<String?> = _statusMessage.asStateFlow()
 
-    private val _sharedIncomingText = MutableStateFlow<String?>(null)
-    val sharedIncomingText: StateFlow<String?> = _sharedIncomingText.asStateFlow()
+    val imports = ChapterImportManager(application, viewModelScope, repository) { novelId, count ->
+        _activeChapterId.value = null
+        closeSubScreen()
+        _currentTab.value = BottomNavTab.LIBRARY
+        setSelectedNovelId(novelId ?: -1L)
+        showToastMessage("تم حفظ $count فصل")
+    }
 
     init {
         viewModelScope.launch(Dispatchers.IO) {
@@ -194,6 +200,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setSelectedNovelId(novelId: Long?) {
         _selectedNovelId.value = novelId
+        _searchQuery.value = ""
+        _statusFilter.value = "ALL"
+        _tagFilter.value = null
         clearMultiSelection()
     }
 
@@ -236,13 +245,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun onReceiveSharedText(text: String) {
-        if (text.isNotBlank()) {
-            _sharedIncomingText.value = text
-        }
+        imports.open(text, _selectedNovelId.value?.takeIf { it > 0 }, fromShare = true)
     }
 
-    fun consumeSharedIncomingText() {
-        _sharedIncomingText.value = null
+    fun saveNovelWithCover(novel: NovelEntity, cover: String?, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                repository.saveNovelWithCover(novel, cover)
+                showToastMessage("تم حفظ الرواية")
+                onResult(null)
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { onResult(e.message ?: "تعذر حفظ الرواية") }
+        }
     }
 
     // --- Settings Updates ---
@@ -312,7 +326,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 translatorStage = translatorStage,
                 tags = tags
             )
-            showToastMessage("تم حفظ الفصل (${TextProcessingUtils.countWords(cleanContent)} كلمة)")
+            showToastMessage("تم حفظ الفصل")
             if (openImmediately) {
                 _activeChapterId.value = newId
             }
@@ -444,25 +458,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteChaptersToTrash(chapterIds: List<Long>) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.moveChaptersToTrash(chapterIds)
-            clearMultiSelection()
-            _undoBanner.value = UndoTrashBanner(
-                message = "تم نقل ${chapterIds.size} فصل إلى سلة المحذوفات (30 يومًا)",
-                deletedChapterIds = chapterIds
-            )
+            try {
+                val removed = repository.moveChaptersToTrash(chapterIds)
+                clearMultiSelection()
+                _undoBanner.value = UndoTrashBanner(
+                    message = "تم نقل ${removed.size} فصل إلى المحذوفات", deletedChapterIds = removed)
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { showToastMessage("تعذر حذف الفصول") }
         }
     }
 
-    fun deleteNovelToTrash(novel: NovelEntity) {
+    fun deleteNovelToTrash(novel: NovelEntity) = deleteNovelsToTrash(listOf(novel.id))
+
+    fun deleteNovelsToTrash(ids: List<Long>) {
         viewModelScope.launch(Dispatchers.IO) {
-            repository.moveNovelToTrash(novel.id)
-            if (_selectedNovelId.value == novel.id) {
-                _selectedNovelId.value = null
-            }
-            _undoBanner.value = UndoTrashBanner(
-                message = "تم نقل رواية «${novel.title}» إلى السلة",
-                deletedNovel = novel
-            )
+            try {
+                val removed = repository.moveNovelsToTrash(ids)
+                if (removed.any { it.id == _selectedNovelId.value }) setSelectedNovelId(null)
+                _undoBanner.value = UndoTrashBanner(
+                    message = "تم نقل ${removed.size} رواية وفصولها إلى السلة", deletedNovels = removed)
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { showToastMessage("تعذر حذف الروايات") }
         }
     }
 
@@ -475,6 +491,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (banner.deletedNovel != null) {
                 repository.restoreNovelFromTrash(banner.deletedNovel)
             }
+            repository.restoreNovelsFromTrash(banner.deletedNovels)
             _undoBanner.value = null
             showToastMessage("تم التراجع واستعادة العناصر بنجاح")
         }

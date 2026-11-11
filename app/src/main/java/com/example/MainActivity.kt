@@ -79,7 +79,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        handleIncomingIntent(intent)
+        if (savedInstanceState == null) handleIncomingIntent(intent)
 
         setContent {
             val settings by viewModel.globalSettings.collectAsStateWithLifecycle()
@@ -95,36 +95,26 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handleIncomingIntent(intent)
     }
 
-    private fun handleIncomingIntent(intent: Intent?) {
-        if (intent == null) return
-        when (intent.action) {
-            Intent.ACTION_SEND -> {
-                val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
-                if (!sharedText.isNullOrBlank()) {
-                    viewModel.onReceiveSharedText(sharedText)
-                } else {
-                    val streamUri = intent.getParcelableExtra<android.net.Uri>(Intent.EXTRA_STREAM)
-                    if (streamUri != null) {
-                        lifecycleScope.launch(Dispatchers.IO) {
-                            val (text, _) = TextProcessingUtils.extractTextFromUri(this@MainActivity, streamUri, "shared.txt")
-                            viewModel.onReceiveSharedText(text)
-                        }
-                    }
+    private fun handleIncomingIntent(incoming: Intent?) {
+        if (incoming == null) return
+        lifecycleScope.launch {
+            try {
+                val text = kotlinx.coroutines.withContext(Dispatchers.IO) {
+                    com.example.data.IncomingShare.read(this@MainActivity, incoming)
                 }
-            }
-            Intent.ACTION_VIEW -> {
-                val dataUri = intent.data
-                if (dataUri != null) {
-                    lifecycleScope.launch(Dispatchers.IO) {
-                        val (text, _) = TextProcessingUtils.extractTextFromUri(this@MainActivity, dataUri, "opened.txt")
-                        viewModel.onReceiveSharedText(text)
-                    }
-                }
-            }
+                if (text != null) viewModel.onReceiveSharedText(text)
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { viewModel.showToastMessage(e.message ?: "تعذر استقبال النص") }
         }
+    }
+
+    override fun onStop() {
+        viewModel.imports.flush()
+        super.onStop()
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
@@ -161,7 +151,7 @@ fun ChapterReaderRoot(viewModel: MainViewModel) {
     val selectedChapterIds by viewModel.selectedChapterIds.collectAsStateWithLifecycle()
     val undoBanner by viewModel.undoBanner.collectAsStateWithLifecycle()
     val statusMessage by viewModel.statusMessage.collectAsStateWithLifecycle()
-    val sharedIncomingText by viewModel.sharedIncomingText.collectAsStateWithLifecycle()
+    val importVisible by viewModel.imports.visible.collectAsStateWithLifecycle()
 
     val deletedNovels = if (activeSubScreen == SubScreen.TRASH) viewModel.deletedNovels.collectAsStateWithLifecycle().value else emptyList()
     val deletedChapters = if (activeSubScreen == SubScreen.TRASH) viewModel.deletedChapters.collectAsStateWithLifecycle().value else emptyList()
@@ -235,6 +225,8 @@ fun ChapterReaderRoot(viewModel: MainViewModel) {
         }
         return
     }
+
+    com.example.ui.ChapterImportHost(viewModel)
 
     // 2. Full-Screen Reader Mode
     if (activeChapterId != null) {
@@ -378,8 +370,7 @@ fun ChapterReaderRoot(viewModel: MainViewModel) {
                                 searchMatchedChapterIds = searchMatchedChapterIds,
                                 statusFilter = statusFilter,
                                 tagFilter = tagFilter,
-                                selectedChapterIds = selectedChapterIds,
-                                sharedIncomingText = sharedIncomingText
+                                selectedChapterIds = selectedChapterIds
                             )
                         }
 
@@ -473,7 +464,7 @@ fun ChapterReaderRoot(viewModel: MainViewModel) {
     }
 
     // 3-Screen Onboarding Tour on First Launch
-    if (!settings.onboardingCompleted) {
+    if (!settings.onboardingCompleted && !importVisible) {
         OnboardingTourDialog(
             onFinish = {
                 viewModel.updateSettings { it.copy(onboardingCompleted = true) }

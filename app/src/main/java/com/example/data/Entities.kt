@@ -3,6 +3,13 @@ package com.example.data
 import androidx.room.Entity
 import androidx.room.PrimaryKey
 
+@Entity(tableName = "chapter_imports")
+data class ImportReceiptEntity(
+    @PrimaryKey val id: String,
+    val novelId: Long?,
+    val chapterIds: String
+)
+
 @Entity(tableName = "novels")
 data class NovelEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
@@ -15,7 +22,8 @@ data class NovelEntity(
     val sortAscending: Boolean = true,
     val settingsOverrideJson: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
-    val deletedAt: Long? = null
+    val deletedAt: Long? = null,
+    val coverFile: String? = null
 )
 
 @Entity(tableName = "chapters")
