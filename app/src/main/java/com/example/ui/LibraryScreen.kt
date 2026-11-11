@@ -39,6 +39,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.LibraryBooks
 import androidx.compose.material.icons.automirrored.filled.MergeType
@@ -152,7 +153,6 @@ fun LibraryScreen(
     statusFilter: String,
     tagFilter: String?,
     selectedChapterIds: Set<Long>,
-    sharedIncomingText: String?,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -176,15 +176,7 @@ fun LibraryScreen(
     var showMergeDialog by remember { mutableStateOf<List<ChapterEntity>?>(null) }
     var showDetailsDialogFor by remember { mutableStateOf<ChapterEntity?>(null) }
     var showSortMenu by remember { mutableStateOf(false) }
-
-    // Open Paste dialog automatically if text was shared from another Android app via Share Target
-    LaunchedEffect(sharedIncomingText) {
-        if (!sharedIncomingText.isNullOrBlank()) {
-            initialPasteContent = sharedIncomingText
-            showPasteDialog = true
-            viewModel.consumeSharedIncomingText()
-        }
-    }
+    var deleteChapterIds by remember { mutableStateOf<List<Long>>(emptyList()) }
 
     // Multiple File Picker Launcher (TXT, MD, HTML, DOCX, EPUB, PDF)
     val filePickerLauncher = rememberLauncherForActivityResult(
@@ -205,6 +197,7 @@ fun LibraryScreen(
     }
     val activeSortBy = currentNovel?.sortBy ?: settings.librarySortBy
     val activeSortAsc = currentNovel?.sortAscending ?: settings.librarySortAscending
+    val activeNovelIds = remember(novels) { novels.map { it.id }.toSet() }
 
     // Filter and sort chapters
     val filterKey = remember(
@@ -216,13 +209,14 @@ fun LibraryScreen(
         tagFilter,
         activeSortBy,
         activeSortAsc
-    ) { listOf(chapters, selectedNovelId, searchQuery, searchMatchedChapterIds, statusFilter, tagFilter, activeSortBy, activeSortAsc) }
+        , activeNovelIds
+    ) { listOf(chapters, selectedNovelId, searchQuery, searchMatchedChapterIds, statusFilter, tagFilter, activeSortBy, activeSortAsc, activeNovelIds) }
     val filteredChapters by produceState(emptyList<ChapterEntity>(), filterKey) {
         value = withContext(Dispatchers.Default) {
         chapters.filter { ch ->
             val matchesNovel = when (selectedNovelId) {
-                null -> true
-                -1L -> ch.novelId == null
+                null -> false
+                -1L -> ch.novelId == null || ch.novelId !in activeNovelIds
                 else -> ch.novelId == selectedNovelId
             }
             val matchesSearch = if (searchQuery.isBlank()) {
@@ -277,7 +271,10 @@ fun LibraryScreen(
     }
 
     Box(modifier = modifier.fillMaxSize()) {
-        Column(modifier = Modifier.fillMaxSize()) {
+        if (selectedNovelId == null) {
+            NovelShelfScreen(viewModel, novels, chapters,
+                onEdit = { editingNovel = it }, onCreate = { showNewNovelDialog = true })
+        } else Column(modifier = Modifier.fillMaxSize()) {
             // Top Multi-Selection Bar OR Search & Tools Bar
             if (selectedChapterIds.isNotEmpty()) {
                 val selectedEntities = chapters.filter { selectedChapterIds.contains(it.id) }
@@ -336,7 +333,7 @@ fun LibraryScreen(
                                     }
                                 }
                                 IconButton(
-                                    onClick = { viewModel.deleteChaptersToTrash(selectedChapterIds.toList()) },
+                                    onClick = { deleteChapterIds = selectedChapterIds.toList() },
                                     modifier = Modifier.testTag("batch_delete_button")
                                 ) {
                                     Icon(
@@ -361,22 +358,23 @@ fun LibraryScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(
-                                imageVector = Icons.Default.MenuBook,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(28.dp)
-                            )
+                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                            IconButton(onClick = { viewModel.setSelectedNovelId(null) }) {
+                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "الروايات")
+                            }
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = if (settings.language == "en") "Library" else "المكتبة",
+                                text = currentNovel?.title ?: "فصول بلا رواية",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
                                 style = MaterialTheme.typography.headlineMedium
                             )
                         }
                         Box {
                             IconButton(onClick = { showToolsMenu = true }, modifier = Modifier.testTag("library_tools")) { Icon(Icons.Default.MoreVert, "أدوات المكتبة") }
                             DropdownMenu(expanded = showToolsMenu, onDismissRequest = { showToolsMenu = false }) {
+                                if (currentNovel != null) DropdownMenuItem(text = { Text("تعديل الرواية والغلاف") }, onClick = { showToolsMenu = false; editingNovel = currentNovel })
+                                if (currentNovel != null) DropdownMenuItem(text = { Text("خيارات الرواية") }, onClick = { showToolsMenu = false; contextMenuNovel = currentNovel })
                                 listOf(Triple("الملاحظات والعلامات", Icons.Default.Bookmark, SubScreen.ANNOTATIONS),
                                     Triple("المصطلحات", Icons.Default.Translate, SubScreen.GLOSSARY),
                                     Triple("بحث واستبدال", Icons.Default.FindReplace, SubScreen.FIND_REPLACE),
@@ -495,70 +493,6 @@ fun LibraryScreen(
                 }
             }
 
-            // Novels (Folders) Strip
-            LazyRow(
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                item {
-                    FilterChip(
-                        selected = selectedNovelId == null,
-                        onClick = { viewModel.setSelectedNovelId(null) },
-                        label = { Text("الكل (${chapters.size})") },
-                        leadingIcon = {
-                            Icon(
-                                Icons.AutoMirrored.Filled.LibraryBooks,
-                                contentDescription = null,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    )
-                }
-                items(novels, key = { it.id }) { novel ->
-                    val count = chapterCounts[novel.id] ?: 0
-                    val novelColor = parseColorSafe(novel.colorHex, MaterialTheme.colorScheme.primary)
-                    FilterChip(
-                        selected = selectedNovelId == novel.id,
-                        onClick = { viewModel.setSelectedNovelId(novel.id) },
-                        label = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                modifier = Modifier.combinedClickable(
-                                    onClick = { viewModel.setSelectedNovelId(novel.id) },
-                                    onLongClick = { contextMenuNovel = novel }
-                                )
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .size(10.dp)
-                                        .clip(CircleShape)
-                                        .background(novelColor)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("${novel.title} ($count)")
-                            }
-                        },
-                        leadingIcon = {
-                            Icon(
-                                Icons.Default.Folder,
-                                contentDescription = null,
-                                tint = novelColor,
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    )
-                }
-                item {
-                    val standaloneCount = chapterCounts[null] ?: 0
-                    FilterChip(
-                        selected = selectedNovelId == -1L,
-                        onClick = { viewModel.setSelectedNovelId(-1L) },
-                        label = { Text("بلا رواية ($standaloneCount)") }
-                    )
-                }
-            }
-
             // Status & Translator Stage Filters Strip
             LazyRow(modifier = Modifier.fillMaxWidth(), contentPadding = PaddingValues(horizontal = 16.dp, vertical = 2.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -627,11 +561,7 @@ fun LibraryScreen(
                                         }
                                     },
                                     onLongClick = {
-                                        if (selectedChapterIds.isEmpty()) {
-                                            contextMenuChapter = chapter
-                                        } else {
-                                            viewModel.toggleChapterSelection(chapter.id)
-                                        }
+                                        viewModel.toggleChapterSelection(chapter.id)
                                     },
                                     onMoreClick = { contextMenuChapter = chapter }
                                 )
@@ -675,11 +605,7 @@ fun LibraryScreen(
                                         }
                                     },
                                     onLongClick = {
-                                        if (selectedChapterIds.isEmpty()) {
-                                            contextMenuChapter = chapter
-                                        } else {
-                                            viewModel.toggleChapterSelection(chapter.id)
-                                        }
+                                        viewModel.toggleChapterSelection(chapter.id)
                                     },
                                     onMoreClick = { contextMenuChapter = chapter }
                                 )
@@ -775,77 +701,25 @@ fun LibraryScreen(
 
     // --- Dialogs & Bottom Sheets ---
 
-    if (showPasteDialog) {
-        PasteAndAutoSplitDialog(
-            initialText = initialPasteContent,
-            novels = novels,
-            defaultNovelId = if (selectedNovelId != null && selectedNovelId > 0) selectedNovelId else novels.firstOrNull()?.id,
-            onDismiss = { showPasteDialog = false },
-            onSaveSingle = { novelId, title, content, openNow ->
-                viewModel.addSingleChapter(
-                    novelId = novelId,
-                    title = title,
-                    content = content,
-                    openImmediately = openNow
-                )
-                showPasteDialog = false
-            },
-            onSaveSplitBatch = { novelId, previews ->
-                viewModel.addSplitChaptersBatch(novelId, previews)
-                showPasteDialog = false
-            }
-        )
-    }
-
-    if (showNewFileDialog) {
-        PasteAndAutoSplitDialog(
-            initialText = "",
-            novels = novels,
-            defaultNovelId = if (selectedNovelId != null && selectedNovelId > 0) selectedNovelId else null,
-            onDismiss = { showNewFileDialog = false },
-            onSaveSingle = { novelId, title, content, openNow ->
-                viewModel.addSingleChapter(
-                    novelId = novelId,
-                    title = title,
-                    content = content,
-                    openImmediately = openNow
-                )
-                showNewFileDialog = false
-            },
-            onSaveSplitBatch = { novelId, previews ->
-                viewModel.addSplitChaptersBatch(novelId, previews)
-                showNewFileDialog = false
-            }
-        )
+    if (showPasteDialog || showNewFileDialog) {
+        LaunchedEffect(Unit) {
+            viewModel.imports.open(if (showPasteDialog) initialPasteContent else "", selectedNovelId?.takeIf { it > 0 })
+            showPasteDialog = false
+            showNewFileDialog = false
+        }
     }
 
     if (showNewNovelDialog || editingNovel != null) {
-        NovelFormDialog(
-            existingNovel = editingNovel,
-            onDismiss = {
-                showNewNovelDialog = false
-                editingNovel = null
-            },
-            onConfirm = { title, desc, colorHex, category, tags ->
-                val current = editingNovel
-                if (current != null) {
-                    viewModel.updateNovelDetails(
-                        current.copy(
-                            title = title,
-                            description = desc,
-                            colorHex = colorHex,
-                            category = category,
-                            tags = tags
-                        )
-                    )
-                } else {
-                    viewModel.createNovel(title, desc, colorHex, category, tags)
-                }
-                showNewNovelDialog = false
-                editingNovel = null
-            }
-        )
+        NovelDetailsDialog(existingNovel = editingNovel, viewModel = viewModel,
+            onDismiss = { showNewNovelDialog = false; editingNovel = null })
     }
+
+    if (deleteChapterIds.isNotEmpty()) AlertDialog(
+        onDismissRequest = { deleteChapterIds = emptyList() }, title = { Text("حذف ${deleteChapterIds.size} فصل؟") },
+        text = { Text("ستنتقل الفصول إلى المحذوفات ويمكن استعادتها خلال 30 يومًا.") },
+        confirmButton = { TextButton(onClick = { viewModel.deleteChaptersToTrash(deleteChapterIds); deleteChapterIds = emptyList() }) { Text("نقل إلى المحذوفات") } },
+        dismissButton = { TextButton(onClick = { deleteChapterIds = emptyList() }) { Text("رجوع") } }
+    )
 
     // Long-press Context Menu BottomSheet for Chapter
     val activeMenuChapter = contextMenuChapter
@@ -917,7 +791,7 @@ fun LibraryScreen(
                     }
                 },
                 onDelete = {
-                    viewModel.deleteChaptersToTrash(listOf(activeMenuChapter.id))
+                    deleteChapterIds = listOf(activeMenuChapter.id)
                     contextMenuChapter = null
                 }
             )
@@ -1343,290 +1217,6 @@ private fun EmptyLibraryView(onPasteClick: () -> Unit, onImportClick: () -> Unit
         Spacer(Modifier.height(16.dp)); Button(onClick = onPasteClick, modifier = Modifier.fillMaxWidth()) { Text("لصق نص") }
         OutlinedButton(onClick = onImportClick, modifier = Modifier.fillMaxWidth()) { Text("استيراد ملفات") }
     }
-}
-
-@Composable
-private fun PasteAndAutoSplitDialog(
-    initialText: String,
-    novels: List<NovelEntity>,
-    defaultNovelId: Long?,
-    onDismiss: () -> Unit,
-    onSaveSingle: (novelId: Long?, title: String, content: String, openImmediately: Boolean) -> Unit,
-    onSaveSplitBatch: (novelId: Long?, previews: List<SplitChapterPreview>) -> Unit
-) {
-    val context = LocalContext.current
-    var pastedContent by remember { mutableStateOf(initialText) }
-    var chapterTitle by remember(initialText) {
-        mutableStateOf(
-            if (initialText.isNotBlank()) TextProcessingUtils.suggestTitleFromContent(initialText) else ""
-        )
-    }
-    var selectedNovelId by remember { mutableStateOf(defaultNovelId) }
-    var autoSplitMode by remember { mutableStateOf(false) }
-
-    val splitPreviews by produceState(emptyList<SplitChapterPreview>(), pastedContent, autoSplitMode) {
-        delay(250)
-        value = withContext(Dispatchers.Default) { if (autoSplitMode && pastedContent.isNotBlank()) {
-            TextProcessingUtils.autoSplitIntoChapters(pastedContent, true)
-        } else {
-            emptyList()
-        } }
-    }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("لصق وإضافة فصل")
-                AssistChip(
-                    onClick = {
-                        val clip = readClipboardText(context)
-                        if (clip.isNotBlank()) {
-                            pastedContent = clip
-                            if (chapterTitle.isBlank()) {
-                                chapterTitle = TextProcessingUtils.suggestTitleFromContent(clip)
-                            }
-                        }
-                    },
-                    label = { Text("لصق الحافظة") },
-                    leadingIcon = {
-                        Icon(Icons.Default.ContentPaste, contentDescription = null, modifier = Modifier.size(16.dp))
-                    }
-                )
-            }
-        },
-        text = {
-            Column(
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-            ) {
-                // Novel selector
-                Text("الرواية / المجلد:", style = MaterialTheme.typography.labelLarge)
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.horizontalScroll(rememberScrollState())
-                ) {
-                    FilterChip(
-                        selected = selectedNovelId == null,
-                        onClick = { selectedNovelId = null },
-                        label = { Text("ملف منفرد") }
-                    )
-                    novels.forEach { n ->
-                        FilterChip(
-                            selected = selectedNovelId == n.id,
-                            onClick = { selectedNovelId = n.id },
-                            label = { Text(n.title) }
-                        )
-                    }
-                }
-
-                // Toggle Auto-Split Multiple Chapters
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("تقسيم تلقائي لعدة فصول", fontWeight = FontWeight.SemiBold)
-                        Text(
-                            "يكتشف أنماط مثل «الفصل 12» أو «Chapter 12» مع معاينة قبل الحفظ",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                    Switch(checked = autoSplitMode, onCheckedChange = { autoSplitMode = it })
-                }
-
-                if (!autoSplitMode) {
-                    OutlinedTextField(
-                        value = chapterTitle,
-                        onValueChange = { chapterTitle = it },
-                        label = { Text("اسم الفصل (يُقترح تلقائيًا من أول سطر)") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                }
-
-                OutlinedTextField(
-                    value = pastedContent,
-                    onValueChange = { newText ->
-                        val wasEmpty = pastedContent.isBlank()
-                        pastedContent = newText
-                        if (wasEmpty && chapterTitle.isBlank() && newText.isNotBlank()) {
-                            chapterTitle = TextProcessingUtils.suggestTitleFromContent(newText)
-                        }
-                    },
-                    label = { Text("النص") },
-                    minLines = 6,
-                    maxLines = 10,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("paste_content_input")
-                )
-
-                // If autoSplitMode is enabled, show Preview of detected chapters
-                if (autoSplitMode && splitPreviews.isNotEmpty()) {
-                    Card(
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.secondaryContainer
-                        ),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Column(modifier = Modifier.padding(10.dp)) {
-                            Text(
-                                text = "معاينة التقسيم التلقائي (${splitPreviews.size} فصول مكتشفة):",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                            Spacer(modifier = Modifier.height(4.dp))
-                            splitPreviews.take(8).forEachIndexed { i, item ->
-                                Text(
-                                    text = "${i + 1}. ${item.title}",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                            if (splitPreviews.size > 8) {
-                                Text(
-                                    text = "... و ${splitPreviews.size - 8} فصول إضافية",
-                                    style = MaterialTheme.typography.bodySmall
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (!autoSplitMode) {
-                    OutlinedButton(
-                        onClick = {
-                            if (pastedContent.isNotBlank()) {
-                                val finalTitle = chapterTitle.ifBlank {
-                                    TextProcessingUtils.suggestTitleFromContent(pastedContent)
-                                }
-                                onSaveSingle(selectedNovelId, finalTitle, pastedContent, true)
-                            }
-                        }
-                    ) {
-                        Text("حفظ وفتح للقراءة")
-                    }
-                }
-                Button(
-                    onClick = {
-                        if (pastedContent.isNotBlank()) {
-                            if (autoSplitMode && splitPreviews.isNotEmpty()) {
-                                onSaveSplitBatch(selectedNovelId, splitPreviews)
-                            } else {
-                                val finalTitle = chapterTitle.ifBlank {
-                                    TextProcessingUtils.suggestTitleFromContent(pastedContent)
-                                }
-                                onSaveSingle(selectedNovelId, finalTitle, pastedContent, false)
-                            }
-                        }
-                    },
-                    modifier = Modifier.testTag("confirm_save_pasted_button")
-                ) {
-                    Text(if (autoSplitMode) "تأكيد حفظ (${splitPreviews.size}) فصول" else "حفظ")
-                }
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("إلغاء")
-            }
-        }
-    )
-}
-
-@Composable
-private fun NovelFormDialog(
-    existingNovel: NovelEntity?,
-    onDismiss: () -> Unit,
-    onConfirm: (title: String, desc: String, colorHex: String, category: String, tags: String) -> Unit
-) {
-    var title by remember { mutableStateOf(existingNovel?.title ?: "") }
-    var desc by remember { mutableStateOf(existingNovel?.description ?: "") }
-    var colorHex by remember { mutableStateOf(existingNovel?.colorHex ?: NovelColors.first()) }
-    var category by remember { mutableStateOf(existingNovel?.category ?: "رواية مترجمة") }
-    var tags by remember { mutableStateOf(existingNovel?.tags ?: "") }
-
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (existingNovel != null) "تعديل الرواية" else "رواية جديدة") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = title,
-                    onValueChange = { title = it },
-                    label = { Text("اسم الرواية / المجلد") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = category,
-                    onValueChange = { category = it },
-                    label = { Text("المجموعة / التصنيف") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = tags,
-                    onValueChange = { tags = it },
-                    label = { Text("الوسوم (مفصولة بفاصلة)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                OutlinedTextField(
-                    value = desc,
-                    onValueChange = { desc = it },
-                    label = { Text("وصف أو ملاحظات المترجم") },
-                    maxLines = 3,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Text("اللون المميز للرواية:", style = MaterialTheme.typography.labelLarge)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    NovelColors.forEach { hex ->
-                        val c = parseColorSafe(hex, Color.Gray)
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .clip(CircleShape)
-                                .background(c)
-                                .border(
-                                    width = if (colorHex == hex) 3.dp else 0.dp,
-                                    color = MaterialTheme.colorScheme.onSurface,
-                                    shape = CircleShape
-                                )
-                                .clickable { colorHex = hex }
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (title.isNotBlank()) {
-                        onConfirm(title, desc, colorHex, category, tags)
-                    }
-                }
-            ) {
-                Text("حفظ")
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("إلغاء")
-            }
-        }
-    )
 }
 
 @Composable
