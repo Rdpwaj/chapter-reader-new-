@@ -32,8 +32,8 @@ object TextProcessingUtils {
     // Matches Arabic & English chapter headers at line start:
     // e.g. "الفصل 1", "الفصل ١٢: البداية", "الفصل الأول", "Chapter 12 - The Return", "# الفصل 3"
     private val CHAPTER_HEADER_REGEX = Regex(
-        pattern = "^\\s*(?:#+\\s*)?(?:الفصل|فصل|الباب|Chapter|CHAPTER|Ch\\.)\\s*(?:[0-9٠-٩]+|الأول|الاول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|الحادي عشر|الثاني عشر).*$",
-        options = setOf(RegexOption.MULTILINE)
+        pattern = """^[\t ]*(?:#{1,6}[\t ]*)?(?:\*\*|__)?(?:الفصل|فصل|الباب|chapter|ch\.)[\t ]*(?:[0-9٠-٩۰-۹]+|الأول|الاول|الثاني|الثالث|الرابع|الخامس|السادس|السابع|الثامن|التاسع|العاشر|الحادي عشر|الثاني عشر)[^\r\n]*$""",
+        options = setOf(RegexOption.MULTILINE, RegexOption.IGNORE_CASE)
     )
 
     fun countWords(text: String): Int {
@@ -98,7 +98,7 @@ object TextProcessingUtils {
 
         // Check if there is a prologue/intro before the first chapter heading
         val firstMatchStart = matches.first().range.first
-        if (firstMatchStart > 40) {
+        if (firstMatchStart > 0) {
             val introContent = normalized.substring(0, firstMatchStart).trim()
             if (introContent.isNotBlank()) {
                 result.add(
@@ -113,7 +113,7 @@ object TextProcessingUtils {
 
         for (i in matches.indices) {
             val currentMatch = matches[i]
-            val headerLine = currentMatch.value.trim().removePrefix("#").trim()
+            val headerLine = currentMatch.value.trim().trim('#', '*', '_', ' ').trim()
             val startIdx = currentMatch.range.first
             val endIdx = if (i + 1 < matches.size) matches[i + 1].range.first else normalized.length
             val sectionText = normalized.substring(startIdx, endIdx).trim()

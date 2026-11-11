@@ -6,11 +6,12 @@ import org.json.JSONObject
 /** v1/v2 backup parser. Validate all records before the first transactional write. */
 data class ReaderBackup(val novels: List<NovelEntity>, val chapters: List<ChapterEntity>,
     val annotations: List<AnnotationEntity>, val glossary: List<GlossaryEntity>,
-    val stats: List<ReadingStatsEntity>, val settings: ReaderSettings?) {
+    val stats: List<ReadingStatsEntity>, val settings: ReaderSettings?,
+    val covers: Map<Long, String> = emptyMap()) {
     companion object {
         fun parse(json: String): ReaderBackup {
             val root = JSONObject(json)
-            require(root.optInt("version", 1) in 1..2)
+            require(root.optInt("version", 1) in 1..3)
             val now = System.currentTimeMillis()
             val novels = root.getJSONArray("novels").objects().map { o ->
                 NovelEntity(id = o.getLong("id"), title = o.getString("title"), description = o.optString("description"),
@@ -46,8 +47,11 @@ data class ReaderBackup(val novels: List<NovelEntity>, val chapters: List<Chapte
             val stats = root.optionalArray("readingStats").objects().map { o ->
                 ReadingStatsEntity(o.getString("dateString"), o.optInt("minutesRead"), o.optInt("wordsRead"), o.optInt("chaptersCompleted"), o.optLong("updatedAt", now))
             }
+            val covers = root.getJSONArray("novels").objects().mapNotNull { o ->
+                o.optString("coverData").takeIf { it.isNotBlank() }?.let { o.getLong("id") to it }
+            }.toMap()
             return ReaderBackup(novels, chapters, annotations, glossary, stats,
-                root.optJSONObject("settings")?.let { ReaderSettings.fromJsonString(it.toString()) })
+                root.optJSONObject("settings")?.let { ReaderSettings.fromJsonString(it.toString()) }, covers)
         }
         private fun JSONObject.optionalLong(key: String): Long? = if (isNull(key)) null else optLong(key, -1).takeIf { it > 0 }
         private fun JSONObject.optionalArray(key: String): JSONArray = if (has(key)) getJSONArray(key) else JSONArray()

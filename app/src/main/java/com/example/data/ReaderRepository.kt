@@ -90,16 +90,31 @@ class ReaderRepository(
         dao.updateNovel(novel)
     }
 
-    suspend fun moveNovelToTrash(novelId: Long) = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        val novel = dao.getNovelById(novelId) ?: return@withContext
-        dao.updateNovel(novel.copy(deletedAt = now))
-        dao.updateNovelChaptersDeletedAt(novelId, now)
+    suspend fun moveNovelToTrash(novelId: Long) = moveNovelsToTrash(listOf(novelId))
+
+    suspend fun moveNovelsToTrash(ids: List<Long>): List<NovelEntity> = withContext(Dispatchers.IO) {
+        dao.trashNovels(ids, System.currentTimeMillis())
     }
 
-    suspend fun restoreNovelFromTrash(novel: NovelEntity) = withContext(Dispatchers.IO) {
-        dao.updateNovel(novel.copy(deletedAt = null))
-        dao.updateNovelChaptersDeletedAt(novel.id, null)
+    suspend fun restoreNovelFromTrash(novel: NovelEntity) = restoreNovelsFromTrash(listOf(novel))
+
+    suspend fun restoreNovelsFromTrash(novels: List<NovelEntity>) = withContext(Dispatchers.IO) {
+        dao.restoreNovels(novels)
+    }
+
+    suspend fun saveImport(draft: ImportDraft) = withContext(Dispatchers.IO) {
+        require(!ChapterImport.isLinkOnly(draft.content)) { "هذا رابط محادثة؛ شارك نص الترجمة أو ملفها" }
+        dao.saveImport(draft, ChapterImport.split(draft))
+    }
+
+    suspend fun wasDraftImported(id: String): Boolean = withContext(Dispatchers.IO) { dao.getImportReceipt(id) != null }
+
+    suspend fun saveNovelWithCover(novel: NovelEntity, coverSource: String?): Long = withContext(Dispatchers.IO) {
+        val store = CoverStore(context)
+        val cover = if (coverSource?.startsWith("content://") == true) store.importUri(android.net.Uri.parse(coverSource))
+            else coverSource?.takeIf { store.file(it)?.isFile == true }
+        if (novel.id == 0L) dao.insertNovel(novel.copy(coverFile = cover))
+        else { dao.updateNovel(novel.copy(coverFile = cover)); novel.id }
     }
 
     suspend fun permanentlyDeleteNovel(novelId: Long) = withContext(Dispatchers.IO) {
@@ -291,17 +306,12 @@ class ReaderRepository(
         newId
     }
 
-    suspend fun moveChaptersToTrash(chapterIds: List<Long>) = withContext(Dispatchers.IO) {
-        val now = System.currentTimeMillis()
-        chapterIds.forEach { id ->
-            dao.updateChapterDeletedAt(id, now)
-        }
+    suspend fun moveChaptersToTrash(chapterIds: List<Long>): List<Long> = withContext(Dispatchers.IO) {
+        dao.trashChapterBatch(chapterIds)
     }
 
     suspend fun restoreChaptersFromTrash(chapterIds: List<Long>) = withContext(Dispatchers.IO) {
-        chapterIds.forEach { id ->
-            dao.updateChapterDeletedAt(id, null)
-        }
+        dao.restoreChapterBatch(chapterIds)
     }
 
     suspend fun permanentlyDeleteChapter(id: Long) = withContext(Dispatchers.IO) {
@@ -366,7 +376,7 @@ class ReaderRepository(
     suspend fun exportFullBackupJson(currentSettings: ReaderSettings): String = withContext(Dispatchers.IO) {
         val snapshot = dao.snapshotBackup()
         val root = JSONObject()
-        root.put("version", 2)
+        root.put("version", 3)
         root.put("exportedAt", System.currentTimeMillis())
         root.put("settings", JSONObject(currentSettings.toJsonString()))
 
@@ -375,6 +385,7 @@ class ReaderRepository(
             val obj = JSONObject()
             obj.put("id", n.id)
             obj.put("title", n.title)
+            CoverStore(context).export(n.coverFile)?.let { obj.put("coverData", it) }
             obj.put("description", n.description)
             obj.put("colorHex", n.colorHex)
             obj.put("category", n.category)
@@ -457,7 +468,18 @@ class ReaderRepository(
     suspend fun importFullBackupJson(jsonString: String): Boolean = withContext(Dispatchers.IO) {
         try {
             val backup = ReaderBackup.parse(jsonString)
-            dao.restoreBackup(backup)
+            val store = CoverStore(context)
+            val written = mutableListOf<String>()
+            try {
+                val restored = backup.novels.map { novel ->
+                    val name = backup.covers[novel.id]?.let { store.restore(it).also(written::add) }
+                    novel.copy(coverFile = name)
+                }
+                dao.restoreBackup(backup.copy(novels = restored))
+            } catch (e: Exception) {
+                written.forEach { store.file(it)?.delete() }
+                throw e
+            }
             backup.settings?.let { saveGlobalSettings(it.copy(lastBackupTimestamp = System.currentTimeMillis())) }
             true
         } catch (e: kotlinx.coroutines.CancellationException) { throw e }

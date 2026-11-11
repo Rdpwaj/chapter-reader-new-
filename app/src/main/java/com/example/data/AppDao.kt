@@ -36,6 +36,61 @@ interface AppDao {
     @Update
     suspend fun updateNovel(novel: NovelEntity)
 
+    @Query("UPDATE novels SET deletedAt = :time WHERE id = :id")
+    suspend fun setNovelDeletedAt(id: Long, time: Long?)
+
+    @Query("UPDATE chapters SET deletedAt = :time WHERE novelId = :id AND deletedAt IS NULL")
+    suspend fun trashActiveNovelChapters(id: Long, time: Long)
+
+    @Query("UPDATE chapters SET deletedAt = NULL WHERE novelId = :id AND deletedAt = :time")
+    suspend fun restoreNovelChapterBatch(id: Long, time: Long)
+
+    @Transaction
+    suspend fun trashNovels(ids: List<Long>, time: Long): List<NovelEntity> {
+        return ids.distinct().mapNotNull { id ->
+            val novel = getNovelById(id)?.takeIf { it.deletedAt == null } ?: return@mapNotNull null
+            setNovelDeletedAt(id, time)
+            trashActiveNovelChapters(id, time)
+            novel.copy(deletedAt = time)
+        }
+    }
+
+    @Transaction
+    suspend fun restoreNovels(novels: List<NovelEntity>) {
+        novels.forEach { item ->
+            val actual = getNovelById(item.id) ?: return@forEach
+            val time = actual.deletedAt ?: return@forEach
+            setNovelDeletedAt(item.id, null)
+            restoreNovelChapterBatch(item.id, time)
+        }
+    }
+
+    @Transaction
+    suspend fun saveImport(draft: ImportDraft, previews: List<SplitChapterPreview>): Pair<Long?, List<Long>> {
+        getImportReceipt(draft.id)?.let { return it.novelId to it.chapterIds.split(',').mapNotNull(String::toLongOrNull) }
+        val target = if (draft.newNovelTitle.isNotBlank()) {
+            insertNovel(NovelEntity(title = draft.newNovelTitle.trim()))
+        } else draft.novelId.also { id ->
+            if (id != null) require(getNovelById(id)?.deletedAt == null && getNovelById(id) != null) {
+                "الرواية غير متاحة؛ اختر رواية أخرى"
+            }
+        }
+        require(previews.isNotEmpty())
+        val now = System.currentTimeMillis()
+        val ids = insertChapters(previews.mapIndexed { index, part ->
+            ChapterEntity(novelId = target, title = part.title, content = part.content,
+                createdAt = now + index, modifiedAt = now + index)
+        })
+        insertImportReceipt(ImportReceiptEntity(draft.id, target, ids.joinToString(",")))
+        return target to ids
+    }
+
+    @Query("SELECT * FROM chapter_imports WHERE id = :id")
+    suspend fun getImportReceipt(id: String): ImportReceiptEntity?
+
+    @Insert
+    suspend fun insertImportReceipt(receipt: ImportReceiptEntity)
+
     @Query("DELETE FROM novels WHERE id = :id")
     suspend fun permanentlyDeleteNovel(id: Long)
 
@@ -121,6 +176,29 @@ interface AppDao {
 
     @Query("UPDATE chapters SET deletedAt = :deletedAt WHERE id = :chapterId")
     suspend fun updateChapterDeletedAt(chapterId: Long, deletedAt: Long?)
+
+    @Query("SELECT id FROM chapters WHERE id IN (:ids) AND deletedAt IS NULL")
+    suspend fun activeIds(ids: List<Long>): List<Long>
+
+    @Transaction
+    suspend fun trashChapterBatch(ids: List<Long>): List<Long> {
+        val active = ids.distinct().chunked(500).flatMap { activeIds(it) }
+        val time = System.currentTimeMillis()
+        active.forEach { updateChapterDeletedAt(it, time) }
+        return active
+    }
+
+    @Query("SELECT novelId FROM chapters WHERE id = :id")
+    suspend fun chapterNovelId(id: Long): Long?
+
+    @Transaction
+    suspend fun restoreChapterBatch(ids: List<Long>) {
+        ids.distinct().forEach { id ->
+            val novelId = chapterNovelId(id)
+            if (novelId != null && getNovelById(novelId)?.deletedAt != null) setNovelDeletedAt(novelId, null)
+            updateChapterDeletedAt(id, null)
+        }
+    }
 
     @Query("UPDATE chapters SET deletedAt = :deletedAt WHERE novelId = :novelId")
     suspend fun updateNovelChaptersDeletedAt(novelId: Long, deletedAt: Long?)
